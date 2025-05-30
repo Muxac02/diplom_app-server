@@ -38,6 +38,19 @@ tm = datetime.now()
 tm += timedelta(minutes=5)
 tm -= timedelta(minutes=tm.minute % 10, seconds=tm.second, microseconds=tm.microsecond)
 
+class DateInfo(SQLModel, table=False):
+    end: datetime = Field(default=None)
+    start: datetime = Field(default=None)
+    start_changed: bool = Field(default=False)
+    end_changed: bool = Field(default=False)
+
+class SearchRecordsInfo(SQLModel, table=False):
+    ship: Optional[int] = Field(default=None, foreign_key="ships.number")
+    port: Optional[int] = Field(default=None, foreign_key="ports.number")
+    arrive_date_info: DateInfo = Field(default=None)
+    sail_date_info: DateInfo = Field(default=None)
+    archived: bool = Field(default=False)
+
 class Records(SQLModel, table=True):
     number: Optional[int] = Field(default=None, primary_key=True)
     ship: int = Field(default=None, foreign_key="ships.number")
@@ -51,6 +64,7 @@ class Records(SQLModel, table=True):
     updated_at: Optional[datetime] = Field(default=None)
     
     users_links: list[Favorite] = Relationship(back_populates="record_cont")
+
 
 class Reports(SQLModel, table=True):
     number: Optional[int] = Field(default=None, primary_key=True)

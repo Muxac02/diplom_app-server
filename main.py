@@ -1,10 +1,10 @@
 from typing import Annotated
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session, select, join
+from sqlmodel import Session, select, join, and_, or_, not_
 from db import init_db, get_session
-from models2 import Ships,Ports,Users,Records,Favorite,Reports
-from datetime import datetime
+from models2 import Ships,Ports,Users,Records,Favorite,Reports,SearchRecordsInfo
+from datetime import datetime, timedelta
 
 #app = FastAPI()
 
@@ -105,31 +105,22 @@ def create_record(record: Records, db: Session = Depends(get_session)):
 
 @router_records.get("/", response_model=List[Records])
 def read_records(skip: int = 0, limit: int = 100, db: Session = Depends(get_session)):
-    # ships = db.exec(select(Ships).offset(skip).limit(limit)).all()
-    # ports = db.exec(select(Ports).offset(skip).limit(limit)).all()
-    # records = db.exec(select(Records).offset(skip).limit(limit)).all()
-    # for record in records:
-    #     for ship in ships:
-    #         if (record.ship == ship.number):
-    #             record.ship = ship.name
-    #     for port in ports:
-    #         if (record.port == port.number):
-    #             record.port = port.name
-    stmt = (
-        select(
-            Records, Ships.name.label("ship_name"), Ports.name.label("port_name"))
-        .select_from(
-            join(Records, Ships, Records.ship == Ships.number).
-            join(Ports, Records.port == Ports.number))
-        .offset(skip).limit(limit))
-    results = db.exec(stmt).all()
-    formatted_records = []
-    for record, ship_name, port_name in results:
-        record.ship = ship_name
-        record.port = port_name
-        formatted_records.append(record)
-    
-    return formatted_records
+    records = db.exec(select(Records).offset(skip).limit(limit)).all()
+    return records
+    # stmt = (
+    #     select(
+    #         Records, Ships.name.label("ship_name"), Ports.name.label("port_name"))
+    #     .select_from(
+    #         join(Records, Ships, Records.ship == Ships.number).
+    #         join(Ports, Records.port == Ports.number))
+    #     .offset(skip).limit(limit))
+    # results = db.exec(stmt).all()
+    # formatted_records = []
+    # for record, ship_name, port_name in results:
+    #     record.ship = ship_name
+    #     record.port = port_name
+    #     formatted_records.append(record)
+    # return formatted_records
 
 @router_records.get("/{record_number}", response_model=Records)
 def read_record(record_number: int, db: Session = Depends(get_session)):
@@ -137,6 +128,64 @@ def read_record(record_number: int, db: Session = Depends(get_session)):
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
     return record
+
+@router_records.post("/search", response_model=List[int])
+def read_record(search_info: SearchRecordsInfo, db: Session = Depends(get_session)):
+    query = select(Records.number)
+    # Фильтрация по кораблю и порту
+    if search_info.ship is not None:
+        query = query.where(Records.ship == search_info.ship)
+    if search_info.port is not None:
+        query = query.where(Records.port == search_info.port)
+    # Фильтрация по дате прибытия
+    if search_info.arrive_date_info is not None:
+        arrive_filters = []
+        date_info = search_info.arrive_date_info
+        if date_info.start_changed and date_info.start is not None:
+            arrive_filters.append(Records.arrive_date >= date_info.start)
+        if date_info.end_changed and date_info.end is not None:
+            arrive_filters.append(Records.arrive_date <= date_info.end)
+        if arrive_filters:
+            query = query.where(and_(*arrive_filters))
+    # Фильтрация по дате отплытия
+    if search_info.sail_date_info is not None:
+        sail_filters = []
+        date_info = search_info.sail_date_info
+        if date_info.start_changed and date_info.start is not None:
+            sail_filters.append(Records.sail_date >= date_info.start)
+        if date_info.end_changed and date_info.end is not None:
+            sail_filters.append(Records.sail_date <= date_info.end)
+        if sail_filters:
+            query = query.where(and_(*sail_filters))
+    # Фильтрация по архивным записям
+    if search_info.archived is not None:
+        current_date = datetime.now()
+        if search_info.archived:
+            # Только архивные записи
+            query = query.where(
+                and_(
+                    Records.arrive_date.isnot(None),
+                    Records.sail_date.isnot(None),
+                    Records.arrive_date_real.isnot(None),
+                    Records.sail_date_real.isnot(None),
+                    Records.sail_date_real < (current_date - timedelta(days=7))
+                )
+            )
+        else:
+            # Только неархивные записи
+            query = query.where(
+                or_(
+                    Records.arrive_date.is_(None),
+                    Records.sail_date.is_(None),
+                    Records.arrive_date_real.is_(None),
+                    Records.sail_date_real.is_(None),
+                    Records.sail_date_real >= (current_date - timedelta(days=7))
+                )
+            )
+    
+    # Выполняем запрос и возвращаем результаты
+    records = db.exec(query).all()
+    return records
 
 @router_records.patch("/{record_number}", response_model=Records)
 def update_record(record_number: int, record: Records, db: Session = Depends(get_session)):
