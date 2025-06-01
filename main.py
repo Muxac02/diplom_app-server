@@ -64,6 +64,17 @@ def read_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_sessio
     users = db.exec(select(Users).offset(skip).limit(limit)).all()
     return users
 
+@router_users.get("/authors", response_model=List[dict])
+def read_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_session)):
+    users = db.exec(select(Users).offset(skip).limit(limit)).all()
+    new_list = []
+    for item in users:
+        it = item.model_dump()
+        new_item = {"number" : it["number"],
+                "name": f"{it['firstname']+ ' ' + it['lastname']}"}
+        new_list.append(new_item)
+    return new_list
+
 @router_users.get("/{user_number}", response_model=Users)
 def read_user(user_number: int, db: Session = Depends(get_session)):
     user = db.get(Users, user_number)

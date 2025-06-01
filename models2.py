@@ -33,6 +33,7 @@ class Users(SQLModel, table=True):
     role: User_Roles = Field(default=User_Roles.department_worker, sa_column=(Enum(User_Roles)))
     
     records_links: list[Favorite] = Relationship(back_populates="user_cont", passive_deletes=True)
+    
 
 tm = datetime.now()
 tm += timedelta(minutes=5)
