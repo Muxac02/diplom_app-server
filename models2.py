@@ -16,8 +16,8 @@ class Favorite(SQLModel, table=True):
     user: Optional[int] = Field(default=None, primary_key=True, foreign_key="users.number")
     record: Optional[int] = Field(default=None, primary_key=True, foreign_key="records.number")
     
-    user_cont: "Users" = Relationship(back_populates="records_links")
-    record_cont: "Records" = Relationship(back_populates="users_links")
+    user_cont: "Users" = Relationship(back_populates="records_links", passive_deletes=True)
+    record_cont: "Records" = Relationship(back_populates="users_links", passive_deletes=True)
 
 class User_Roles(str, enum.Enum):
     admin = "admin"
@@ -32,7 +32,7 @@ class Users(SQLModel, table=True):
     hashed_pwd: str
     role: User_Roles = Field(default=User_Roles.department_worker, sa_column=(Enum(User_Roles)))
     
-    records_links: list[Favorite] = Relationship(back_populates="user_cont")
+    records_links: list[Favorite] = Relationship(back_populates="user_cont", passive_deletes=True)
 
 tm = datetime.now()
 tm += timedelta(minutes=5)
@@ -63,7 +63,7 @@ class Records(SQLModel, table=True):
     comment: Optional[str] = Field(default=None)
     updated_at: Optional[datetime] = Field(default=None)
     
-    users_links: list[Favorite] = Relationship(back_populates="record_cont")
+    users_links: list[Favorite] = Relationship(back_populates="record_cont", passive_deletes=True)
 
 
 class Reports(SQLModel, table=True):
