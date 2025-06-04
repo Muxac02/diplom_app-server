@@ -73,3 +73,12 @@ class Reports(SQLModel, table=True):
     created_at: datetime
     content: dict = Field(default_factory=dict, sa_column=Column(JSON))
     updated_at: Optional[datetime] = Field(default=None)
+
+class ReportBlockInfo(SQLModel, table=False):
+    name: str = Field(default=None)
+    ships: list[int] = Field(default_factory=list)
+    dateFrom: datetime = Field(default=None)
+    dateTo: datetime = Field(default=None)
+    
+class ReportBlockContent(SQLModel, table=False):
+    content: dict = Field(default_factory=dict, sa_column=Column(JSON))

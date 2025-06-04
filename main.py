@@ -1,10 +1,11 @@
 from typing import Annotated
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
-from sqlmodel import Session, select, join, and_, or_, not_
+from sqlmodel import Session, select, join, and_, or_, not_, Sequence
 from db import init_db, get_session
-from models2 import Ships,Ports,Users,Records,Favorite,Reports,SearchRecordsInfo
+from models2 import Ships,Ports,Users,Records,Favorite,Reports,SearchRecordsInfo, ReportBlockInfo, ReportBlockContent
 from datetime import datetime, timedelta
+import statistics
 
 #app = FastAPI()
 
@@ -245,6 +246,215 @@ def create_report(report: Reports, db: Session = Depends(get_session)):
     db.commit()
     db.refresh(report)
     return report
+
+@router_reports.post("/create_block", response_model=list)
+def create_record_block(info: ReportBlockInfo, db: Session = Depends(get_session)):
+    if info.dateTo.timestamp() != 0:
+        statement = select(Records).where(
+            and_(
+                Records.arrive_date >= info.dateFrom,
+                Records.arrive_date <= info.dateTo,
+                Records.ship.in_(info.ships)
+            )
+        )
+    else:
+        statement = select(Records).where(
+            and_(
+                Records.arrive_date >= info.dateFrom,
+                Records.ship.in_(info.ships)
+            )
+        )
+    records = db.exec(statement).all()
+    def format_timedelta(td: timedelta):
+                """Форматирует timedelta в строку 'HHH:MM:SS'"""
+                total_seconds = int(td.total_seconds())
+                hours, remainder = divmod(total_seconds, 3600)
+                minutes, seconds = divmod(remainder, 60)
+                return f"{hours}:{minutes:02d}:{seconds:02d}"
+    match info.name:
+        case "records":
+            return records
+        case "points":
+            def process_ship_data(data: Sequence[Records]):
+                ships = {}
+                for item in data:
+                    ship_id = item.ship
+                    if ship_id not in ships:
+                        ships[ship_id] = {
+                            'arrive_in_time': 0,
+                            'arrive_late': 0,
+                            'sail_in_time': 0,
+                            'sail_late': 0
+                        }
+                    
+                    # Обработка arrive дат (пропускаем, если arrive_date_real == None)
+                    arrive_date = item.arrive_date
+                    arrive_date_real = item.arrive_date_real
+                    
+                    if arrive_date_real is not None:
+                        if arrive_date > arrive_date_real:
+                            ships[ship_id]['arrive_in_time'] += 1
+                        else:
+                            ships[ship_id]['arrive_late'] += 1
+                    
+                    # Обработка sail дат (пропускаем, если sail_date_real == None)
+                    sail_date = item.sail_date
+                    sail_date_real = item.sail_date_real
+                    
+                    if sail_date_real is not None:
+                        if sail_date > sail_date_real:
+                            ships[ship_id]['sail_in_time'] += 1
+                        else:
+                            ships[ship_id]['sail_late'] += 1
+                
+                # Формируем итоговый список
+                result = []
+                for i, (ship_id, stats) in enumerate(ships.items(), start=1):
+                    arrive_total = stats['arrive_in_time'] + stats['arrive_late']
+                    sail_total = stats['sail_in_time'] + stats['sail_late']
+                    
+                    result.append({
+                        'number': i,
+                        'ship': ship_id,  # Можно заменить на название судна, если есть связь
+                        'arrive': {
+                            'inTime': stats['arrive_in_time'],
+                            'late': stats['arrive_late'],
+                            'total': arrive_total
+                        },
+                        'sail': {
+                            'inTime': stats['sail_in_time'],
+                            'late': stats['sail_late'],
+                            'total': sail_total
+                        }
+                    })
+                
+                return result
+            return process_ship_data(records)
+        case "travel":
+            def calculate_time_stats(deltas: List[timedelta]):
+                """Вычисляет min, avg, max для списка timedelta и форматирует в строки"""
+                if not deltas:
+                    return {"min": "0:00:00", "avg": "0:00:00", "max": "0:00:00"}
+                
+                min_td = min(deltas)
+                avg_seconds = statistics.mean([td.total_seconds() for td in deltas])
+                avg_td = timedelta(seconds=avg_seconds)
+                max_td = max(deltas)
+                
+                return {
+                    "min": format_timedelta(min_td),
+                    "avg": format_timedelta(avg_td),
+                    "max": format_timedelta(max_td)
+                }
+            def process_ship_time_stats(data: Sequence[Records]):
+                ships = {}
+                
+                for item in data:
+                    ship_id = item.ship
+                    if ship_id not in ships:
+                        ships[ship_id] = {
+                            'arrive_lag': [],
+                            'arrive_lead': [],
+                            'sail_lag': [],
+                            'sail_lead': []
+                        }
+                    
+                    # Обработка arrive
+                    if item.arrive_date_real is not None:
+                        delta = item.arrive_date_real - item.arrive_date
+                        if delta >= timedelta(0):
+                            ships[ship_id]['arrive_lag'].append(delta)
+                        else:
+                            ships[ship_id]['arrive_lead'].append(abs(delta))
+                    
+                    # Обработка sail
+                    if item.sail_date_real is not None:
+                        delta = item.sail_date_real - item.sail_date
+                        if delta >= timedelta(0):
+                            ships[ship_id]['sail_lag'].append(delta)
+                        else:
+                            ships[ship_id]['sail_lead'].append(abs(delta))
+                
+                # Формируем итоговый результат
+                result = []
+                for i, (ship_id, stats) in enumerate(ships.items(), start=1):
+                    result.append({
+                        "number": i,
+                        "ship": ship_id,
+                        "lag": {
+                            "arrive": calculate_time_stats(stats['arrive_lag']),
+                            "sail": calculate_time_stats(stats['sail_lag'])
+                        },
+                        "lead": {
+                            "arrive": calculate_time_stats(stats['arrive_lead']),
+                            "sail": calculate_time_stats(stats['sail_lead'])
+                        }
+                    })
+                return result
+            return process_ship_time_stats(records)
+        case "port":
+            def calculate_port_stats(data: Sequence[Records]):
+                ships = {}
+                
+                for item in data:
+                    ship_id = item.ship
+                    if ship_id not in ships:
+                        ships[ship_id] = {
+                            'planned_times': [],
+                            'real_times': []
+                        }
+                    
+                    # Вычисляем плановое время в порту (sail_date - arrive_date)
+                    planned_time = item.sail_date - item.arrive_date
+                    ships[ship_id]['planned_times'].append(planned_time)
+                    
+                    # Вычисляем фактическое время в порту (sail_date_real - arrive_date_real)
+                    if item.arrive_date_real is not None and item.sail_date_real is not None:
+                        real_time = item.sail_date_real - item.arrive_date_real
+                        ships[ship_id]['real_times'].append(real_time)
+                
+                # Формируем итоговый результат
+                result = []
+                for i, (ship_id, stats) in enumerate(ships.items(), start=1):
+                    # Статистика для планового времени
+                    planned_stats = {
+                        "min": format_timedelta(min(stats['planned_times'])),
+                        "avg": format_timedelta(timedelta(
+                            seconds=statistics.mean(
+                                [t.total_seconds() for t in stats['planned_times']]
+                            )
+                        )),
+                        "max": format_timedelta(max(stats['planned_times']))
+                    } if stats['planned_times'] else {
+                        "min": "0:00:00",
+                        "avg": "0:00:00",
+                        "max": "0:00:00"
+                    }
+                    
+                    # Статистика для фактического времени
+                    real_stats = {
+                        "min": format_timedelta(min(stats['real_times'])),
+                        "avg": format_timedelta(timedelta(
+                            seconds=statistics.mean(
+                                [t.total_seconds() for t in stats['real_times']]
+                            )
+                        )),
+                        "max": format_timedelta(max(stats['real_times']))
+                    } if stats['real_times'] else {
+                        "min": "0:00:00",
+                        "avg": "0:00:00",
+                        "max": "0:00:00"
+                    }
+                    
+                    result.append({
+                        "number": i,
+                        "ship": ship_id,
+                        "planned": planned_stats,
+                        "real": real_stats
+                    })
+                return result
+            return calculate_port_stats(records)
+    return [{"error" : f"incorrct info.name, got `{info.name}`, expected: [records, points, travel, port]"}]
 
 @router_reports.get("/", response_model=List[Reports])
 def read_reports(skip: int = 0, limit: int = 100, db: Session = Depends(get_session)):
