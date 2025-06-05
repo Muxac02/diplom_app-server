@@ -1,22 +1,80 @@
 from typing import Annotated
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status, Security
 from sqlmodel import Session, select, join, and_, or_, not_, Sequence
 from db import init_db, get_session
-from models2 import Ships,Ports,Users,Records,Favorite,Reports,SearchRecordsInfo, ReportBlockInfo, ReportBlockContent
+from models2 import Ships,Ports,Users,Records,Favorite,Reports,SearchRecordsInfo, ReportBlockInfo, Token, TokenData, UserCreate, UserUpdate, User_Roles
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from datetime import datetime, timedelta
 import statistics
+from jose import JWTError, jwt
+from passlib.context import CryptContext
+import os
+from dotenv import load_dotenv
+
 
 #app = FastAPI()
 
 init_db()
 SessionDep = Annotated[Session, Depends(get_session)]
 
-#Что я хочу сделать?
+# Конфигурация для хеширования паролей
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-#Кусок апишки для авторизации, где будет выдаваться токен и проверяться текущий токен
-#Заранее все методы сразу делать под роли, в зависимости от авторизации 
+# Конфигурация для JWT
+SECRET_KEY = os.environ.get("SECRET_KEY")  # Замените на реальный секретный ключ
+ALGORITHM = os.environ.get("ALGORITHM")
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES"))
 
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="users/token")
+# Вспомогательные функции
+def verify_password(plain_password: str, hashed_password: str):
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_password_hash(password: str):
+    return pwd_context.hash(password)
+
+def authenticate_user(db: Session, username: str, password: str):
+    user = db.exec(select(Users).where(Users.login == username)).first()
+    if not user:
+        return False
+    if not verify_password(password, user.hashed_pwd):
+        return False
+    return user
+
+def create_access_token(data: dict, expires_delta: timedelta | None = None):
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=15)
+    to_encode.update({"exp": expire})
+    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded_jwt
+
+async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_session)):
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        username: str = payload.get("sub")
+        if username is None:
+            raise credentials_exception
+        token_data = TokenData(username=username)
+    except JWTError:
+        raise credentials_exception
+    
+    user = db.exec(select(Users).where(Users.login == token_data.username)).first()
+    if user is None:
+        raise credentials_exception
+    return user
+
+async def get_current_active_user(current_user: Users = Depends(get_current_user)):
+    # Здесь можно добавить проверку на активность пользователя, если нужно
+    return current_user
 
 # Роутер для портов
 router_ports = APIRouter(prefix="/ports", tags=["ports"])
@@ -53,15 +111,52 @@ def read_ship(ship_number: int, db: Session = Depends(get_session)):
 # Роутер для пользователей
 router_users = APIRouter(prefix="/users", tags=["users"])
 
+@router_users.post("/token", response_model=Token)
+async def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_session)
+):
+    user = authenticate_user(db, form_data.username, form_data.password)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.login}, expires_delta=access_token_expires
+    )
+    return {"access_token": access_token, "token_type": "bearer"}
+
+# Модифицированные CRUD конечные точки
 @router_users.post("/", response_model=Users)
-def create_user(user: Users, db: Session = Depends(get_session)):
-    db.add(user)
+def create_user(user: UserCreate, db: Session = Depends(get_session)):
+    # Проверяем, существует ли пользователь с таким логином
+    existing_user = db.exec(select(Users).where(Users.login == user.login)).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Login already registered")
+    
+    hashed_password = get_password_hash(user.password)
+    db_user = Users(
+        firstname=user.firstname,
+        lastname=user.lastname,
+        login=user.login,
+        hashed_pwd=hashed_password,
+        role=user.role
+    )
+    db.add(db_user)
     db.commit()
-    db.refresh(user)
-    return user
+    db.refresh(db_user)
+    return db_user
 
 @router_users.get("/", response_model=List[Users])
-def read_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_session)):
+def read_users(
+    skip: int = 0,
+    limit: int = 100,
+    current_user: Users = Depends(get_current_active_user),
+    db: Session = Depends(get_session)
+):
     users = db.exec(select(Users).offset(skip).limit(limit)).all()
     return users
 
@@ -71,39 +166,67 @@ def read_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_sessio
     new_list = []
     for item in users:
         it = item.model_dump()
-        new_item = {"number" : it["number"],
-                "name": f"{it['firstname']+ ' ' + it['lastname']}"}
+        new_item = {
+            "number": it["number"],
+            "name": f"{it['firstname']} {it['lastname']}"
+        }
         new_list.append(new_item)
     return new_list
 
 @router_users.get("/{user_number}", response_model=Users)
-def read_user(user_number: int, db: Session = Depends(get_session)):
+def read_user(
+    user_number: int,
+    current_user: Users = Depends(get_current_active_user),
+    db: Session = Depends(get_session)
+):
     user = db.get(Users, user_number)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return user
 
 @router_users.patch("/{user_number}", response_model=Users)
-def update_user(user_number: int, user: Users, db: Session = Depends(get_session)):
+def update_user(
+    user_number: int,
+    user: UserUpdate,
+    current_user: Users = Depends(get_current_active_user),
+    db: Session = Depends(get_session)
+):
     db_user = db.get(Users, user_number)
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
+    
     user_data = user.dict(exclude_unset=True)
+    
+    if "password" in user_data:
+        hashed_password = get_password_hash(user_data["password"])
+        user_data["hashed_pwd"] = hashed_password
+        del user_data["password"]
+    
     for key, value in user_data.items():
         setattr(db_user, key, value)
+    
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
     return db_user
 
 @router_users.delete("/{user_number}")
-def delete_user(user_number: int, db: Session = Depends(get_session)):
+def delete_user(
+    user_number: int,
+    current_user: Users = Depends(get_current_active_user),
+    db: Session = Depends(get_session)
+):
     user = db.get(Users, user_number)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     db.delete(user)
     db.commit()
     return {"ok": True}
+
+@router_users.get("/me/", response_model=Users)
+async def read_users_me(current_user: Users = Depends(get_current_active_user)):
+    return current_user
+
 
 # Роутер для записей
 router_records = APIRouter(prefix="/records", tags=["records"])

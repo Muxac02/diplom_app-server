@@ -34,6 +34,27 @@ class Users(SQLModel, table=True):
     
     records_links: list[Favorite] = Relationship(back_populates="user_cont", passive_deletes=True)
     
+class Token(SQLModel, table=False):
+    access_token: str
+    token_type: str
+
+class TokenData(SQLModel, table=False):
+    username: str | None = None
+
+class UserCreate(SQLModel, table=False):
+    firstname: str
+    lastname: str
+    login: str
+    password: str
+    role: User_Roles = Field(default=User_Roles.department_worker)
+
+class UserUpdate(SQLModel, table=False):
+    firstname: Optional[str] = None
+    lastname: Optional[str] = None
+    login: Optional[str] = None
+    password: Optional[str] = None
+    role: Optional[User_Roles] = None
+    
 
 tm = datetime.now()
 tm += timedelta(minutes=5)
