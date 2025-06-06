@@ -12,11 +12,24 @@ from passlib.context import CryptContext
 import os
 from dotenv import load_dotenv
 
-
+from fastapi import FastAPI, APIRouter, Response, Request
+from starlette.background import BackgroundTask
+from fastapi.routing import APIRoute
+from starlette.types import Message
+from typing import Dict, Any
+import logging
+logging.basicConfig(filename='info.log', level=logging.DEBUG)
+def log_info(req_body, res_body):
+    logging.info(req_body)
+    logging.info(res_body)
 #app = FastAPI()
 
 init_db()
 SessionDep = Annotated[Session, Depends(get_session)]
+# Основное приложение FastAPI
+from fastapi import FastAPI
+
+app = FastAPI()
 
 # Конфигурация для хеширования паролей
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -64,11 +77,16 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
         if username is None:
             raise credentials_exception
         token_data = TokenData(username=username)
-    except JWTError:
+    except JWTError as e:
+        print(f"JWT Error: {e}")  # Логируем ошибку
         raise credentials_exception
+    
+    # Добавим логирование для отладки
+    print(f"Looking for user with login: {token_data.username}")
     
     user = db.exec(select(Users).where(Users.login == token_data.username)).first()
     if user is None:
+        print("User not found in database")
         raise credentials_exception
     return user
 
@@ -173,6 +191,9 @@ def read_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_sessio
         new_list.append(new_item)
     return new_list
 
+@router_users.get("/current/get", response_model=Users)
+async def read_users_me(current_user: Users = Depends(get_current_active_user)):
+    return current_user
 @router_users.get("/{user_number}", response_model=Users)
 def read_user(
     user_number: int,
@@ -223,9 +244,6 @@ def delete_user(
     db.commit()
     return {"ok": True}
 
-@router_users.get("/me/", response_model=Users)
-async def read_users_me(current_user: Users = Depends(get_current_active_user)):
-    return current_user
 
 
 # Роутер для записей
@@ -647,10 +665,6 @@ def delete_favorite(user: int, record: int, db: Session = Depends(get_session)):
     db.commit()
     return {"ok": True}
 
-# Основное приложение FastAPI
-from fastapi import FastAPI
-
-app = FastAPI()
 app.include_router(router_ports)
 app.include_router(router_ships)
 app.include_router(router_users)
