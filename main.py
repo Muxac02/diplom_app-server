@@ -17,11 +17,6 @@ from starlette.background import BackgroundTask
 from fastapi.routing import APIRoute
 from starlette.types import Message
 from typing import Dict, Any
-import logging
-logging.basicConfig(filename='info.log', level=logging.DEBUG)
-def log_info(req_body, res_body):
-    logging.info(req_body)
-    logging.info(res_body)
 #app = FastAPI()
 
 init_db()
@@ -646,14 +641,14 @@ def read_favorites(skip: int = 0, limit: int = 100, db: Session = Depends(get_se
     favorites = db.exec(select(Favorite).offset(skip).limit(limit)).all()
     return favorites
 
-@router_favorites.get("/user/{user_number}", response_model=List[Records])
+@router_favorites.get("/user/{user_number}", response_model=List[int])
 def read_user_favorites(user_number: int, db: Session = Depends(get_session)):
     user = db.get(Users, user_number)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     data = []
     for link in user.records_links:
-        data.append(db.get(Records, link.record))
+        data.append(db.get(Records, link.record).number)
     return data
 
 @router_favorites.delete("/")
